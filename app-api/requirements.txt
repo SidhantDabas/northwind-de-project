@@ -1,0 +1,6 @@
+# API Backend
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+

@@ -1,0 +1,18 @@
+# API Backend
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+python-multipart
+
+# Data & Databricks
+pandas
+databricks-sql-connector
+databricks-sdk
+azure-identity
+python-dotenv
+
+
+# Frontend
+streamlit
+requests
