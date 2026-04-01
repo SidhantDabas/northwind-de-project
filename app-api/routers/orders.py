@@ -67,8 +67,34 @@ def get_orders(
     db: Session = Depends(get_db)
 ):
     offset = (page - 1) * PAGE_SIZE
-    params = {"limit": PAGE_SIZE, "offset": offset}
-      
+
+    # Get paginated order IDs first
+    id_stmt = select(OrdersORM.OrderID)
+    count_stmt = select(func.count(distinct(OrdersORM.OrderID)))
+
+    if customer_id:
+        id_stmt = id_stmt.where(OrdersORM.CustomerID == customer_id)
+        count_stmt = count_stmt.where(OrdersORM.CustomerID == customer_id)
+
+    id_stmt = id_stmt.order_by(OrdersORM.OrderDate).limit(PAGE_SIZE).offset(offset)
+    order_ids = [row[0] for row in db.execute(id_stmt).all()]
+
+    total = db.execute(count_stmt).scalar() or 0
+    total_pages = -(-total // PAGE_SIZE)
+
+    if not order_ids:
+        return {
+            "data": [],
+            "pagination": {
+                "page": page,
+                "page_size": PAGE_SIZE,
+                "total_records": total,
+                "total_pages": total_pages,
+                "next_page": page + 1 if page < total_pages else None
+            }
+        }
+
+    # Fetch orders + line items for those IDs
     stmt = select(
         OrdersORM.OrderID,
         OrdersORM.CustomerID,
@@ -78,30 +104,47 @@ def get_orders(
         OrdersORM.Freight,
         OrdersORM.ShipCity,
         OrdersORM.ShipCountry,
-        func.sum(Orders_detailsORM.UnitPrice * Orders_detailsORM.Quantity * (1 - Orders_detailsORM.Discount)).label("OrderValue"),
-        func.count(Orders_detailsORM.ProductID).label("LineItems")
-    ).join(Orders_detailsORM, OrdersORM.OrderID == Orders_detailsORM.OrderID)
-    
-    count_stmt = select(func.count(distinct(OrdersORM.OrderID)))
-    
-    # filter
-    if customer_id:
-        stmt = stmt.where(OrdersORM.CustomerID == customer_id)
-        count_stmt = count_stmt.where(OrdersORM.CustomerID == customer_id)
+        Orders_detailsORM.ProductID,
+        Orders_detailsORM.UnitPrice,
+        Orders_detailsORM.Quantity,
+        Orders_detailsORM.Discount,
+        (Orders_detailsORM.UnitPrice *
+         Orders_detailsORM.Quantity *
+         (1 - Orders_detailsORM.Discount)).label("LineTotal")
+    ).join(
+        Orders_detailsORM, OrdersORM.OrderID == Orders_detailsORM.OrderID
+    ).where(
+        OrdersORM.OrderID.in_(order_ids)
+    ).order_by(OrdersORM.OrderDate, OrdersORM.OrderID)
 
-    # Group By, Order By, and Pagination
-    stmt = stmt.group_by(OrdersORM.OrderID).order_by(OrdersORM.OrderDate).limit(PAGE_SIZE).offset(offset)
-
-    # Execute
     rows = db.execute(stmt).mappings().all()
-    
-    # Total count for pagination (with filter if applied)
-    total = db.execute(count_stmt).scalar() or 0
-    
-    total_pages = -(-total // PAGE_SIZE)
+
+    # Group line items under their parent order
+    orders_dict = {}
+    for row in rows:
+        oid = row["OrderID"]
+        if oid not in orders_dict:
+            orders_dict[oid] = {
+                "OrderID": row["OrderID"],
+                "CustomerID": row["CustomerID"],
+                "EmployeeID": row["EmployeeID"],
+                "OrderDate": str(row["OrderDate"]),
+                "ShippedDate": str(row["ShippedDate"]) if row["ShippedDate"] else None,
+                "Freight": row["Freight"],
+                "ShipCity": row["ShipCity"],
+                "ShipCountry": row["ShipCountry"],
+                "line_items": []
+            }
+        orders_dict[oid]["line_items"].append({
+            "ProductID": row["ProductID"],
+            "UnitPrice": row["UnitPrice"],
+            "Quantity": row["Quantity"],
+            "Discount": row["Discount"],
+            "LineTotal": round(row["LineTotal"], 2)
+        })
 
     return {
-        "data": rows,
+        "data": list(orders_dict.values()),
         "pagination": {
             "page": page,
             "page_size": PAGE_SIZE,
